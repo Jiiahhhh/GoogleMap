@@ -3,10 +3,12 @@ package com.ilal.googlemap
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.location.Address
 import android.location.Geocoder
 import android.location.Location
 import android.location.LocationListener
+import android.os.AsyncTask
 import android.os.Build
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
@@ -17,6 +19,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.google.android.gms.common.data.DataBufferSafeParcelable
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.maps.CameraUpdateFactory
@@ -25,11 +28,18 @@ import com.google.android.gms.maps.MapView
 import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.MarkerOptions
+import com.google.android.gms.maps.model.PolylineOptions
 import com.google.android.gms.tasks.OnCompleteListener
 import com.google.android.gms.tasks.Task
 import com.ilal.googlemap.databinding.ActivityMainBinding
+import org.json.JSONObject
+import java.io.BufferedReader
 import java.io.IOError
 import java.io.IOException
+import java.io.InputStream
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 
 class MainActivity : AppCompatActivity(), OnMapReadyCallback
@@ -77,6 +87,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback
         btnSearch.setOnClickListener {
             searchArea()
         }
+
+        binding.btnClear.setOnClickListener {
+            mapView.onCreate(mapViewBundle)
+            mapView.getMapAsync(this)
+        }
     }
 
     private fun searchArea() {
@@ -121,9 +136,119 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback
                     Toast.makeText(this@MainActivity, "Distance = $s KM", Toast.LENGTH_SHORT).show()
 
                     tvCurrentLocation!!.setText("Distance = $s KM")
+
+                    val url: String = getDirectionUrl(origin!!.position, destination!!.position)!!
+                    val downloadTask: DownloadTask = DownloadTask()
+
+                    //start download api
+                    downloadTask.execute(url)
                 }
             }
         }
+    }
+
+    inner class DownloadTask :
+        AsyncTask<String?, Void?, String>() {
+
+        override fun onPostExecute(result: String?) {
+            super.onPostExecute(result)
+            val parserTask = ParserTask()
+            parserTask.execute(result)
+
+        }
+
+        override fun doInBackground(vararg url: String?): String {
+            var data = ""
+            try {
+                data = downloadUrl(url[0].toString()).toString()
+            } catch (e: java.lang.Exception) {
+                Log.d("Background Task", e.toString())
+            }
+            return data
+        }
+    }
+
+    inner class ParserTask :
+        AsyncTask<String?, Int?, List<List<HashMap<String, String>>>?>() {
+        //Parsing the data in non-ui thread
+        override fun doInBackground(vararg jsonData: String?): List<List<HashMap<String, String>>>? {
+            val jObjects: JSONObject
+            var routes: List<List<HashMap<String, String>>>? = null
+            try {
+                jObjects = JSONObject(jsonData[0])
+                val parser = DataParser()
+                routes = parser.parse(jObjects)
+            } catch (e: java.lang.Exception) {
+                e.printStackTrace()
+            }
+            return routes
+        }
+
+        override fun onPostExecute(result: List<List<HashMap<String, String>>>?) {
+            val points = ArrayList<LatLng?>()
+            val lineOptions = PolylineOptions()
+            for (i in result!!.indices) {
+                val path =
+                    result[i]
+                for (j in path.indices) {
+                    val point = path[j]
+                    val lat = point["lat"]!!.toDouble()
+                    val lng = point["lng"]!!.toDouble()
+                    val position = LatLng(lat, lng)
+                    points.add(position)
+                }
+                lineOptions.addAll(points)
+                lineOptions.width(8f)
+                lineOptions.color(Color.BLUE)
+                lineOptions.geodesic(true)
+            }
+            if (points.size != 0)
+                mMap!!.addPolyline(lineOptions)
+        }
+    }
+
+    //A Method to download json data from url
+    @kotlin.jvm.Throws(IOException::class)
+    private fun downloadUrl(stringUrl: String): String? {
+        var data = ""
+        var iStream: InputStream? = null
+        var urlConnection: HttpURLConnection? = null
+        try {
+            val url = URL(stringUrl)
+            urlConnection = url.openConnection() as HttpURLConnection
+            urlConnection.connect()
+            iStream = urlConnection!!.inputStream
+            val br = BufferedReader(InputStreamReader(iStream))
+            val sb = StringBuffer()
+            var line: String?
+            while (br.readLine().also { line = it } != null) {
+                sb.append(line)
+            }
+            data = sb.toString()
+            br.close()
+        } catch (e: java.lang.Exception) {
+            Log.d("Exception", e.toString())
+        } finally {
+            iStream!!.close()
+            urlConnection!!.disconnect()
+        }
+        return data
+    }
+
+
+    private fun getDirectionUrl(origin: LatLng, dest: LatLng): String? {
+        //origin route
+        val str_origin = "origin" + origin.latitude + "," + origin.longitude
+        //destination route
+        val str_dest = "destination" + dest.latitude + "," + dest.longitude
+        //setting transportation mode
+        val mode = "mode-driving"
+        //building the parameters to the web services
+        val parameters = "$str_origin&$str_dest&$mode"
+        //output format
+        val output = "json"
+        //Building the url to the web service
+        return "https://maps.googleapis.com/maps/api/directions/$output?$parameters&key=AIzaSyC__iu3N4N6YPGTzU5lmEcUgnO3IMCVJRE"
     }
 
     override fun onMapReady(p0: GoogleMap) {
